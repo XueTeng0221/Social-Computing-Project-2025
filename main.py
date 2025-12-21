@@ -2,12 +2,13 @@
 
 import torch
 import pandas as pd
+import os
+import argparse
 from torch_geometric.data import HeteroData
 from torch_geometric.data.storage import BaseStorage, GlobalStorage, NodeStorage, EdgeStorage
 from models import FraudDetector
 from preprocessor import DataPreprocessor
 from trainer import train_epoch, evaluate, FocalLoss
-import os
 
 torch.serialization.add_safe_globals([
     HeteroData, BaseStorage, GlobalStorage, NodeStorage, EdgeStorage
@@ -54,8 +55,20 @@ def split_dataset(data, train_ratio=0.7, val_ratio=0.15):
 
 
 def main():
+    argp = argparse.ArgumentParser(description="训练异构图诈骗检测模型")
+    argp.add_argument('--alpha', type=float, default=0.7, help='Focal Loss 的 alpha 参数')
+    argp.add_argument('--gamma', type=float, default=2.0, help='Focal Loss 的 gamma 参数')
+    argp.add_argument('--force_rebuild', action='store_true', help='强制重建图数据')
+    argp.add_argument('--epochs', type=int, default=50, help='训练的最大轮数')
+    argp.add_argument('--patience', type=int, default=10, help='早停的耐心值')
+    argp.add_argument('--lr', type=float, default=1e-4, help='学习率')
+    argp.add_argument('--weight_decay', type=float, default=5e-4, help='权重衰减')
+    argp.add_argument('--save-dir', type=str, default='models', help='模型保存目录')
+    args = argp.parse_args()
+    
+    
     # 1. 准备数据
-    data = prepare_data(force_rebuild=True)
+    data = prepare_data(force_rebuild=args.force_rebuild)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🖥️  使用设备: {device}")
     data = data.to(device)
@@ -68,20 +81,20 @@ def main():
         out_channels=1,
         metadata=data.metadata()
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-4)
-    criterion = FocalLoss(alpha=0.7, gamma=2)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    criterion = FocalLoss(alpha=args.alpha, gamma=args.gamma)
     
     # 3. 训练循环
     best_f1 = 0
-    patience = 10
+    patience = args.patience
     patience_counter = 0
-    for epoch in range(50):
+    for epoch in range(args.epochs):
         loss = train_epoch(model, data, optimizer, criterion)
         val_f1, val_auc = evaluate(model, data, data['post'].val_mask)
         print(f"Epoch {epoch+1:02d}: Loss {loss:.4f} | Val F1 {val_f1:.4f} | Val AUC {val_auc:.4f}")
-        if val_f1 > best_f1:
+        if val_f1 >= best_f1:
             best_f1 = val_f1
-            torch.save(model.state_dict(), 'best_model.pth')
+            torch.save(model.state_dict(), f'{args.save_dir}/best_model.pth')
             print(f"  ✅ 保存最佳模型 (F1={best_f1:.4f})")
             patience_counter = 0
         else:
@@ -94,7 +107,7 @@ def main():
     print("\n🎉 训练完成!")
     
     # 4. 测试最佳模型
-    model.load_state_dict(torch.load('best_model.pth', weights_only=True))
+    model.load_state_dict(torch.load(f'{args.save_dir}/best_model.pth', weights_only=True))
     test_f1, test_auc = evaluate(model, data, data['post'].test_mask)
     print(f"\n🎯 测试集性能: F1 {test_f1:.4f} | AUC {test_auc:.4f}")
 
