@@ -4,3 +4,5 @@ torch
 numpy
 pandas
 scikit-learn
+bs4
+selenium

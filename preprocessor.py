@@ -1,9 +1,11 @@
+# preprocessor.py
+
 import torch
 import hashlib
 import re
 import pandas as pd
 from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, DefaultDict
+from typing import Dict, List
 from torch_geometric.data import HeteroData
 from transformers import AutoTokenizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -345,52 +347,4 @@ class DataPreprocessor:
         # 可以预计算每个连通分量的统计特征，存储在 data.subgraph_features 中
 
         return data
-
-
-# ========== 使用示例 ==========
-if __name__ == "__main__":
-    import os
-    os.environ["HF-ENDPOINT"] = "https://hf-mirror.com"
-    # 模拟数据
-    df_posts = pd.DataFrame({
-        'post_id': [1, 2, 3, 4],
-        'content': [
-            '高收益理财，加群了解详情：123456789',
-            '正常的生活分享内容',
-            '内幕消息，带单稳赚，联系电话13812345678',
-            '转发上一条帖子'
-        ],
-        'user_id': [101, 102, 103, 101],
-        'label': [1, 0, 1, 0],
-        'is_repost': [False, False, False, True],
-        'parent_post_id': [None, None, None, 3],
-        'media_urls': [None, 'http://example.com/img1.jpg', None, None]
-    })
-
-    df_users = pd.DataFrame({
-        'user_id': [101, 102, 103],
-        'reg_time': ['2023-01-01', '2020-05-15', '2024-01-01'],
-        'post_count': [50, 200, 10],
-        'follower_count': [100, 5000, 5],
-        'following_count': [500, 300, 200],
-        'verified': [0, 1, 0],
-        'has_avatar': [1, 1, 0]
-    })
-
-    df_relations = pd.DataFrame({
-        'source_user_id': [101, 102, 103, 101],
-        'target_user_id': [102, 103, 101, 103],
-        'relation_type': ['follow', 'follow', 'interact', 'interact']
-    })
-
-    preprocessor = DataPreprocessor()
-    graph_data = preprocessor.build_graph(df_posts, df_users, df_relations)
-
-    print("图结构构建完成！")
-    print(f"节点类型: {graph_data.node_types}")
-    print(f"边类型: {graph_data.edge_types}")
-    print(f"Post 节点数量: {graph_data['post'].x.shape[0]}")
-    print(f"User 节点数量: {graph_data['user'].x.shape[0]}")
-
-    # 保存图数据
-    torch.save(graph_data, 'data/processed/hetero_graph.pt')
+    

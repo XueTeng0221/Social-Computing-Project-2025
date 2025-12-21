@@ -9,7 +9,7 @@
 ```aiignore
 cd Social-Computing-Project-2025
 mkdir data
-mkdir data/raw
+mkdir data/raw data/processed
 mkdir results
 ```
 
@@ -17,6 +17,7 @@ mkdir results
 # Linux
 python3 -m venv .venv/
 source .venv/bin/activate
+source /etc/network_turbo
 pip3 install -r requirements.txt
 python3 -u fetcher.py --save-dir=./data
 python3 -u main.py --alpha=0.7 --gamma=2 --epochs=50 --optimizer=adam --save-dir=./results
