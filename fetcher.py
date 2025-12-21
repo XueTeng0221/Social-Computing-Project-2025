@@ -581,7 +581,7 @@ class TiebaFetcher:
         
         # 添加伪标签（实际项目中需要人工标注）
         # 这里用简单规则：包含高风险关键词的标记为 1
-        risk_keywords = ['视频', '加载', '技术', '带单', '加群', 'QQ', '微信', 'usdt']
+        risk_keywords = ['包卡', '带单', '加群', 'QQ', '微信', 'usdt']
         df_posts['label'] = df_posts['content'].apply(
             lambda x: 1 if any(kw in str(x) for kw in risk_keywords) else 0
         )

@@ -14,7 +14,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 class DataPreprocessor:
     def __init__(self, model_name: str = 'hfl/chinese-roberta-wwm-ext'):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.risk_keywords = ['高收益', '带单', '内幕', '回本', '加群', 'usdt', '兼职刷单']
+        self.risk_keywords = ['包卡', '带单', '加群', 'QQ', '微信', 'usdt']
         self.risk_domains = ['fake-invest.com', 'scam-platform.net']
 
     def clean_text(self, text: str) -> str:
