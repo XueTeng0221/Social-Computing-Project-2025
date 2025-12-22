@@ -22,6 +22,7 @@ argp.add_argument('--max-scrolls', type=int, default=10, help='每个帖子最�
 argp.add_argument('--max-floor', type=int, default=50, help='每个帖子最大爬取楼层数')
 argp.add_argument('--output', type=str, default='data', help='输出目录')
 argp.add_argument('--concurrency', type=int, default=8, help='并发数')
+argp.add_argument('--headless', type=bool, default=True, help='是否无头模式运行')
 args = argp.parse_args()
 
 
@@ -49,7 +50,7 @@ class AsyncTiebaFetcher:
         logger.info("正在启动 Playwright...")
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
-            headless=False, # 调试通过后可改为 True
+            headless=args.headless, # 调试通过后可改为 True
             args=['--no-sandbox', '--disable-setuid-sandbox',
                   '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--disable-quic']
         )
@@ -99,7 +100,6 @@ class AsyncTiebaFetcher:
 
                 try:
                     await page.goto(url, wait_until='domcontentloaded', timeout=30000)
-                    # 滚动到底部以加载更多（如果是动态加载）
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await page.wait_for_timeout(2000)
                 except Exception as e:
