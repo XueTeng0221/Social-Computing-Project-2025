@@ -21,6 +21,7 @@ argp.add_argument('--max-pages', type=int, default=2, help='最大页数')
 argp.add_argument('--max-scrolls', type=int, default=10, help='每个帖子最大滚动次数')
 argp.add_argument('--max-floor', type=int, default=50, help='每个帖子最大爬取楼层数')
 argp.add_argument('--output', type=str, default='data', help='输出目录')
+argp.add_argument('--concurrency', type=int, default=8, help='并发数')
 args = argp.parse_args()
 
 
@@ -444,7 +445,7 @@ async def main():
     )
     df_posts, df_users, df_relations = await fetcher.run()
     fetcher.save_data(df_posts, df_users, df_relations,
-                      f'{args.output}/async_data')
+                      f'{args.output}/raw')
 
 if __name__ == "__main__":
     # Windows下需要设置 Loop 策略

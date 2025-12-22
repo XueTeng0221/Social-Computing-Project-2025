@@ -17,8 +17,7 @@ mkdir results
 # Linux
 python3 -m venv .venv/
 source .venv/bin/activate
-pip3 install -r requirements.txt
-playwright install # 加载爬虫 Driver
+pip3 install -r requirements.txt; playwright install # 加载爬虫 Driver
 python3 -u fetcher.py --output=./data --tieba=三角洲行动陪玩 --max-pages=100  --max-floor=50 # 启动爬虫
 python3 -u main.py --alpha=0.7 --gamma=2 --epochs=50 --optimizer=adam --save-dir=./results # 启动训练
 ```
@@ -27,8 +26,7 @@ python3 -u main.py --alpha=0.7 --gamma=2 --epochs=50 --optimizer=adam --save-dir
 # Windows
 python -m venv .venv/
 .\.venv\Scripts\activate
-pip install -r requirements.txt
-playwright install # 加载爬虫 Driver
+pip install -r requirements.txt; playwright install # 加载爬虫 Driver
 python -u fetcher.py --output=./data --tieba=三角洲行动陪玩 --max-pages=100 --max-floor=50 # 启动爬虫
 python -u main.py --alpha=0.7 --gamma=2 --epochs=50 --optimizer=adam --save-dir=./results # 启动训练
 ```
