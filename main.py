@@ -4,6 +4,7 @@ import torch
 import pandas as pd
 import os
 import argparse
+from torch.nn.parameter import UninitializedParameter
 from torch_geometric.data import HeteroData
 from torch_geometric.data.storage import BaseStorage, GlobalStorage, NodeStorage, EdgeStorage
 from models import FraudDetector
@@ -11,7 +12,7 @@ from preprocessor import DataPreprocessor
 from trainer import train_epoch, evaluate, FocalLoss
 
 torch.serialization.add_safe_globals([
-    HeteroData, BaseStorage, GlobalStorage, NodeStorage, EdgeStorage
+    HeteroData, BaseStorage, GlobalStorage, NodeStorage, EdgeStorage, UninitializedParameter
 ])
 
 
@@ -54,11 +55,11 @@ def split_dataset(data, train_ratio=0.7, val_ratio=0.15):
     return data
 
 
-def main():
+if __name__ == "__main__":
     argp = argparse.ArgumentParser(description="训练异构图诈骗检测模型")
     argp.add_argument('--alpha', type=float, default=0.7, help='Focal Loss 的 alpha 参数')
     argp.add_argument('--gamma', type=float, default=2.0, help='Focal Loss 的 gamma 参数')
-    argp.add_argument('--force_rebuild', action='store_true', help='强制重建图数据')
+    argp.add_argument('--force_rebuild', type=bool, default=True, help='强制重建图数据')
     argp.add_argument('--epochs', type=int, default=50, help='训练的最大轮数')
     argp.add_argument('--patience', type=int, default=10, help='早停的耐心值')
     argp.add_argument('--lr', type=float, default=1e-4, help='学习率')
@@ -76,13 +77,13 @@ def main():
     
     # 2. 初始化模型
     model = FraudDetector(
-        text_model_name='hfl/chinese-roberta-wwm-ext',
         hidden_channels=64,
         out_channels=1,
         metadata=data.metadata()
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = FocalLoss(alpha=args.alpha, gamma=args.gamma)
+    print(f"🚀 模型初始化完成，参数: alpha={args.alpha}, gamma={args.gamma}, lr={args.lr}, weight_decay={args.weight_decay}")
     
     # 3. 训练循环
     best_f1 = 0
@@ -110,7 +111,3 @@ def main():
     model.load_state_dict(torch.load(f'{args.save_dir}/best_model.pth', weights_only=True))
     test_f1, test_auc = evaluate(model, data, data['post'].test_mask)
     print(f"\n🎯 测试集性能: F1 {test_f1:.4f} | AUC {test_auc:.4f}")
-
-
-if __name__ == "__main__":
-    main()

@@ -3,15 +3,15 @@
 import torch
 import torch.nn as nn
 from torch_geometric.nn import HeteroConv, GATConv, Linear
-from transformers import AutoModel
 
 class FraudDetector(nn.Module):
-    def __init__(self, text_model_name, hidden_channels, out_channels, metadata, user_feat_dim=None, entity_feat_dim=None):
+    def __init__(self, hidden_channels, out_channels, metadata, text_embed_dim=768):
+        """
+        参数:
+        - text_embed_dim: 输入的文本向量维度 (RoBERTa 默认为 768)
+        """
         super(FraudDetector, self).__init__()
-        self.text_encoder = AutoModel.from_pretrained(text_model_name)
-        text_embed_dim = self.text_encoder.config.hidden_size
-        self.user_feat_dim = user_feat_dim
-        self.entity_feat_dim = entity_feat_dim
+        # 将 BERT 的 768 维向量 映射到 GNN 的 hidden_channels
         self.post_proj = Linear(text_embed_dim, hidden_channels)
         self.user_proj = None
         self.entity_proj = None
@@ -20,11 +20,11 @@ class FraudDetector(nn.Module):
             conv_dict = {
                 ('user', 'publish', 'post'): GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False),
                 ('user', 'repost', 'post'): GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False),
-                ('post', 'contain', 'entity'): GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False), # 修正: mention -> contain
+                ('post', 'contain', 'entity'): GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False),
+                ('user', 'interact', 'user'): GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False),
+                ('user', 'follow', 'user'): GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False),
+                ('post', 'similar', 'post'): GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False),
             }
-            
-            conv_dict[('user', 'interact', 'user')] = GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False)
-            conv_dict[('user', 'follow', 'user')] = GATConv((-1, -1), hidden_channels, heads=2, concat=False, add_self_loops=False)
             conv = HeteroConv(conv_dict, aggr='sum')
             self.convs.append(conv)
         
@@ -37,31 +37,36 @@ class FraudDetector(nn.Module):
     
     def forward(self, x_dict, edge_index_dict):
         # ========== 1. 节点特征提取 ==========
-        input_ids, attention_mask = x_dict['post']
-        text_output = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
-        h_post = text_output.last_hidden_state[:, 0, :]
+        
+        # 修改点：不再接收 tuple (input_ids, mask)，直接接收 Tensor
+        h_post = x_dict['post']  # Shape: [num_posts, 768]
+        
+        # 投影到 hidden_channels
         h_post = self.post_proj(h_post)
         
+        # 动态初始化 User 投影层 (Lazy Initialization)
         if self.user_proj is None:
             self.user_feat_dim = x_dict['user'].size(1)
-            self.user_proj = Linear(self.user_feat_dim, h_post.size(1)).to(x_dict['user'].device)
+            self.user_proj = Linear(self.user_feat_dim, h_post.size(1)).to(h_post.device)
         h_user = self.user_proj(x_dict['user'])
         
+        # 动态初始化 Entity 投影层
         if self.entity_proj is None:
             self.entity_feat_dim = x_dict['entity'].size(1)
-            self.entity_proj = Linear(self.entity_feat_dim, h_post.size(1)).to(x_dict['entity'].device)
+            self.entity_proj = Linear(self.entity_feat_dim, h_post.size(1)).to(h_post.device)
         h_entity = self.entity_proj(x_dict['entity'])
         
         h_dict = {'post': h_post, 'user': h_user, 'entity': h_entity}
         
-        # ========== 2. 异构图卷积 (修复 Crash 的关键部分) ==========
+        # ========== 2. 异构图卷积 ==========
         for conv in self.convs:
             h_prev = h_dict
             h_dict = conv(h_dict, edge_index_dict)
             h_dict = {key: h.relu() for key, h in h_dict.items()}
+            # 残差连接/保留未更新节点
             for k in h_prev:
                 if k not in h_dict:
-                    h_dict[k] = h_prev[k]  # 直接保留上一层的特征
+                    h_dict[k] = h_prev[k]
         
         # ========== 3. Post 节点分类 ==========
         out = self.classifier(h_dict['post'])

@@ -6,3 +6,6 @@ pandas
 scikit-learn
 bs4
 selenium
+faiss-cpu
+playwright
+pytest-playwright
