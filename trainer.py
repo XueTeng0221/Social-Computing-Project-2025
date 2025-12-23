@@ -1,75 +1,81 @@
 # trainer.py
 
 import torch
+import numpy as np
 import torch.nn.functional as F
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score
 from torch_geometric.data import HeteroData
 from models import FraudDetector
 
-# FocalLoss 保持不变...
-class FocalLoss(torch.nn.Module):
-    def __init__(self, alpha=0.25, gamma=2):
-        super(FocalLoss, self).__init__()
+class WeightedFocalLoss(torch.nn.Module):
+    """
+    修正后的 Focal Loss，支持对正样本加权
+    alpha: 正样本的权重系数 (0 < alpha < 1)，通常设为 0.75 或更高以通过权重解决不平衡
+    gamma: 聚焦参数，关注难分样本
+    """
+    def __init__(self, alpha=0.75, gamma=2):
+        super(WeightedFocalLoss, self).__init__()
         self.alpha = alpha
         self.gamma = gamma
 
     def forward(self, inputs, targets):
         if targets.shape != inputs.shape:
             targets = targets.view_as(inputs)
+            
         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
         pt = torch.exp(-bce_loss)
-        loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+        loss = alpha_t * (1 - pt) ** self.gamma * bce_loss
         return loss.mean()
 
 def train_epoch(model: FraudDetector, data: HeteroData, optimizer: torch.optim.Optimizer, criterion: torch.nn.Module):
     model.train()
     optimizer.zero_grad()
-    
-    # 修改点：直接传入 Tensor，去掉 .mask
     x_dict = {
         'post': data['post'].x, 
         'user': data['user'].x,
         'entity': data['entity'].x
     }
 
-    out = model(x_dict, data.edge_index_dict)
-    
-    # 获取训练集的掩码
-    # 注意：确保你的 data['post'] 里有 train_mask
+    out = model(x_dict, data.edge_index_dict, post_meta=data['post'].meta)
     mask = data['post'].train_mask
     if mask is None:
         raise ValueError("data['post'].train_mask is None. Please split dataset first.")
 
     pred = out[mask]
     label = data['post'].y[mask]
-    
     loss = criterion(pred, label.float())
     loss.backward()
     optimizer.step()
     return loss.item()
 
-def evaluate(model: FraudDetector, data: HeteroData, mask: torch.Tensor):
+def evaluate(model, data, mask):
     model.eval()
     with torch.no_grad():
-        # 修改点：同样直接传入 Tensor
         x_dict = {
             'post': data['post'].x,
             'user': data['user'].x,
             'entity': data['entity'].x
         }
-        out = model(x_dict, data.edge_index_dict)
+        out = model(x_dict, data.edge_index_dict, post_meta=data['post'].meta)
         pred_prob = torch.sigmoid(out[mask]).squeeze().cpu().numpy()
         labels = data['post'].y[mask].cpu().numpy()
         
         if len(labels) == 0:
             return 0.0, 0.5
-            
-        pred_label = (pred_prob > 0.5).astype(int)
-        
-        f1 = f1_score(labels, pred_label)
+
+        if np.random.rand() < 0.05: # 只有5%的概率打印，避免刷屏
+            print(f"\n[Debug] Pred Stats: Mean={pred_prob.mean():.4f}, Max={pred_prob.max():.4f}, Min={pred_prob.min():.4f}")
+            print(f"[Debug] True Positives in batch: {labels.sum()}")
+
+        threshold = 0.5
+        pred_label = (pred_prob > threshold).astype(int)
+        f1 = f1_score(labels, pred_label, zero_division=0)
+        precision = precision_score(labels, pred_label, zero_division=0)
+        recall = recall_score(labels, pred_label, zero_division=0)
         try:
             auc = roc_auc_score(labels, pred_prob)
         except ValueError:
             auc = 0.5 
 
-    return f1, auc
+    return f1, auc, precision, recall

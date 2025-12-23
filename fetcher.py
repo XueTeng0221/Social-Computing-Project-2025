@@ -12,7 +12,9 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 # 配置日志
 logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    filename='fetcher.log', filemode='w',
+                    encoding='utf-8')
 logger = logging.getLogger(__name__)
 
 argp = argparse.ArgumentParser()
@@ -35,12 +37,9 @@ class AsyncTiebaFetcher:
         self.list_url_template = f"{self.base_url}/f?kw={quote(tieba_name)}&pn={{page}}"
         self.thread_url_template = f"{self.base_url}/p/{{tid}}"
         self.user_url_template = f"{self.base_url}/home/main?un={{username}}&fr=pb"
-
         self.users_data = {}
         self.seen_posts = set()
         self.seen_users = set()
-
-        # 异步并发控制
         self.sem = asyncio.Semaphore(concurrency)
         self.browser = None
         self.context = None
@@ -50,16 +49,15 @@ class AsyncTiebaFetcher:
         logger.info("正在启动 Playwright...")
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
-            headless=args.headless, # 调试通过后可改为 True
+            headless=args.headless,
             args=['--no-sandbox', '--disable-setuid-sandbox',
                   '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--disable-quic']
         )
         
-        # 核心修改：检查是否存在 auth.json 并加载
         if os.path.exists('auth.json'):
             logger.info("正在加载本地 Cookie (auth.json)...")
             self.context = await self.browser.new_context(
-                storage_state='auth.json', # 加载保存的状态
+                storage_state='auth.json',
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 viewport={'width': 1920, 'height': 1080}
             )
@@ -195,7 +193,13 @@ class AsyncTiebaFetcher:
                             'div', class_='d_post_content')
                         clean_content = content_div.get_text(
                             strip=True) if content_div else ""
-
+                        media_urls = []
+                        img_tags = floor_div.find_all('img')
+                        for img in img_tags:
+                            img_url = img.get('src') or img.get('data-original')
+                            if img_url:
+                                media_urls.append(img_url.split('/')[-1])
+                        
                         post_info = {
                             'post_id': content_info.get('post_id'),
                             'content': clean_content,
@@ -204,6 +208,7 @@ class AsyncTiebaFetcher:
                             'floor_num': content_info.get('post_no'),
                             'is_repost': 0,
                             'parent_post_id': None,
+                            'media_urls': ','.join(media_urls) if media_urls else None,
                             'thread_id': tid
                         }
                         floors.append(post_info)
@@ -232,6 +237,7 @@ class AsyncTiebaFetcher:
                                     'floor_num': f"{content_info.get('post_no')}.sub",
                                     'is_repost': 1,
                                     'parent_post_id': lzl_data.get('pid'),
+                                    'media_urls': None,
                                     'thread_id': tid
                                 })
                             except:
@@ -251,6 +257,19 @@ class AsyncTiebaFetcher:
     async def fetch_user_info(self, username):
         """并发爬取用户信息"""
         async with self.sem:
+            def safe_int(element, pattern=None):
+                """安全提取整数，支持正则匹配"""
+                try:
+                    if element is None:
+                        return 0
+                    text = element.get_text(strip=True)
+                    if pattern:
+                        match = re.search(pattern, text)
+                        return int(match.group(1)) if match else 0
+                    return int(re.sub(r'\D', '', text)) if text else 0
+                except (ValueError, AttributeError):
+                    return 0
+                
             if not username:
                 return None
             logger.info(f"爬取用户: {username}")
@@ -266,29 +285,39 @@ class AsyncTiebaFetcher:
 
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
-
-                # 吧龄
-                age_tag = soup.find(string=re.compile(r'吧龄:'))
-                if age_tag:
-                    match = re.search(r'([\d.]+)年', age_tag)
-                    user_info['reg_time'] = float(
-                        match.group(1)) if match else 0
-
-                # 发帖数
-                post_tag = soup.find(string=re.compile(r'发贴:'))
-                if post_tag:
-                    match = re.search(r'(\d+)', post_tag)
-                    user_info['post_count'] = int(
-                        match.group(1)) if match else 0
-
+                userdata_div = soup.find('div', class_='userinfo_userdata')
+                if userdata_div:
+                    text_spans = [span.get_text(strip=True) for span in userdata_div.find_all('span') 
+                                if 'userinfo_split' not in span.get('class', [])]
+                    
+                    logger.info(f"提取到的用户数据: {text_spans}")
+                    
+                    for span_text in text_spans:
+                        if '吧龄' in span_text:
+                            age_match = re.search(r'吧龄:([\d.]+)年?', span_text)
+                            user_info['reg_time'] = float(age_match.group(1))
+                            
+                        if '发贴' in span_text or '发帖' in span_text:
+                            post_match = re.search(r'发[贴帖]:(\d+)', span_text)
+                            user_info['post_count'] = int(post_match.group(1))
+                            
+                        user_info['verified'] = '会员天数' in span_text
+                
                 # 粉丝关注
-                concern_nums = soup.select('span.concern_num a')
+                concern_nums = soup.find_all('span', class_='concern_num')
+                logger.info(f"找到 {len(concern_nums)} 个关注数据标签")
                 if len(concern_nums) >= 2:
-                    user_info['following_count'] = int(
-                        re.sub(r'\D', '', concern_nums[1].text) or 0)
-                    user_info['follower_count'] = int(
-                        re.sub(r'\D', '', concern_nums[0].text) or 0)
-
+                    fans_link = concern_nums[1].find('a')
+                    user_info['follower_count'] = safe_int(fans_link, r'(\d+)')
+                    follow_link = concern_nums[0].find('a')
+                    user_info['following_count'] = safe_int(follow_link, r'(\d+)')
+                
+                avatar_tag = soup.find('a', class_='userinfo_head')
+                has_avatar = bool(avatar_tag and avatar_tag.find('img'))
+                user_info['has_avatar'] = has_avatar
+                
+                logger.info(f"✓ 成功解析用户 {username}: {user_info}")
+                
             except Exception as e:
                 logger.warning(f"用户 {username} 爬取失败: {e}")
             finally:
@@ -417,8 +446,7 @@ class AsyncTiebaFetcher:
             df_users = pd.DataFrame(list(self.users_data.values()))
 
             # 5. 构建关系
-            relations = self.build_relations(
-                df_posts)  # 这里需要补全 build_relations 逻辑
+            relations = self.build_relations(df_posts)
             df_relations = pd.DataFrame(relations)
 
             return df_posts, df_users, df_relations
@@ -428,12 +456,9 @@ class AsyncTiebaFetcher:
 
     def save_data(self, df_posts, df_users, df_relations, output_dir):
         os.makedirs(output_dir, exist_ok=True)
-        df_posts.to_csv(f'{output_dir}/posts.csv',
-                        index=False, encoding='utf-8-sig')
-        df_users.to_csv(f'{output_dir}/users.csv',
-                        index=False, encoding='utf-8-sig')
-        df_relations.to_csv(f'{output_dir}/relations.csv',
-                            index=False, encoding='utf-8-sig')
+        df_posts.to_csv(f'{output_dir}/posts.csv', index=False, encoding='utf-8-sig')
+        df_users.to_csv(f'{output_dir}/users.csv', index=False, encoding='utf-8-sig')
+        df_relations.to_csv(f'{output_dir}/relations.csv', index=False, encoding='utf-8-sig')
         logger.info(f"数据保存至 {output_dir}")
 
 

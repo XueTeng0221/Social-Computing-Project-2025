@@ -9,3 +9,4 @@ selenium
 faiss-cpu
 playwright
 pytest-playwright
+matplotlib

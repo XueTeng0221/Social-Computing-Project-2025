@@ -1,3 +1,5 @@
+# preprocessor.py
+
 import torch
 import hashlib
 import re
@@ -18,9 +20,9 @@ class DataPreprocessor:
         self.model.eval()
         with open('risk_keywords.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
-            self.risk_keywords = data['risk_keywords']
-            self.urgent_keywords = data['urgent_keywords']
-            self.risk_domains = data['risk_domains']
+            self.risk_keywords = data.get('risk_keywords', [])
+            self.urgent_keywords = data.get('urgent_keywords', [])
+            self.risk_domains = data.get('risk_domains', [])
 
     def clean_text(self, text) -> str:
         """
@@ -127,7 +129,7 @@ class DataPreprocessor:
             ], dim=0)
             
         else:
-            # 数据量大时，为了节省内存，可以使用分块计算或Faiss库（此处简化为分块循环）
+            # 数据量大时，为了节省内存，可以使用分块计算
             print(f"Warning: Large number of posts ({num_nodes}), computing similarity might be slow.")
             sources_list = []
             targets_list = []
@@ -154,8 +156,42 @@ class DataPreprocessor:
 
         return edge_index
 
+    def preprocess_timestamp(self, df_posts: pd.DataFrame) -> pd.Series:
+        """
+        将时间字符串转换为归一化的数值特征
+        格式示例: 2025-12-23 07:00
+        """
+        dt_series = pd.to_datetime(df_posts['timestamp'], errors='coerce')
+        if dt_series.isnull().all():
+            return pd.Series([0.0] * len(df_posts))
+        
+        min_time = dt_series.min()
+        dt_series = dt_series.fillna(min_time)
+        timestamps = dt_series.astype('int64') // 10**9
+        
+        # Min-Max 归一化 (防止数值过大影响梯度)
+        ts_min = timestamps.min()
+        ts_max = timestamps.max()
+        if ts_max - ts_min > 0:
+            normalized_ts = (timestamps - ts_min) / (ts_max - ts_min)
+        else:
+            normalized_ts = pd.Series([0.0] * len(timestamps))
+            
+        return normalized_ts
+
     def build_graph(self, df_posts: pd.DataFrame, df_users: pd.DataFrame, df_relations: pd.DataFrame,
                     df_media: pd.DataFrame = None) -> HeteroData:
+        df_posts['parent_post_id'] = df_posts['parent_post_id'].replace(r'^\s*$', np.nan, regex=True)
+        df_posts['parent_post_id'] = df_posts['parent_post_id'].where(pd.notnull(df_posts['parent_post_id']), None)
+        df_posts['floor_num'] = df_posts['floor_num'].replace(r'\..*$', '', regex=True)
+        initial_len = len(df_users)
+        df_users = df_users.dropna(subset=['user_name']).reset_index(drop=True)
+        print(f"  - Dropped {initial_len - len(df_users)} users with empty names.")
+        df_users['reg_time'] = df_users['reg_time'].fillna(0.0)
+        df_users.loc[df_users['reg_time'] == 0.0, 'reg_time'] = 0.1  # 避免除零，设为一个很小的正数
+        df_users['follower_count'] = df_users['follower_count'].fillna(0)
+        df_users['following_count'] = df_users['following_count'].fillna(0)
+        print("Data cleaning completed.")
         data = HeteroData()
 
         # ========== 1. 构建节点特征 ==========
@@ -166,18 +202,21 @@ class DataPreprocessor:
         post_embeddings = self.get_text_embeddings_batch(post_texts_clean, batch_size=64)
         data['post'].x = post_embeddings  # Shape: [num_posts, 768]
         data['post'].y = torch.tensor(df_posts['label'].values, dtype=torch.long)
+        normalized_timestamps = self.preprocess_timestamp(df_posts)
         post_meta_features = []
-        for text in df_posts['content']:
+        for text, ts_val in zip(df_posts['content'], normalized_timestamps):
             if pd.isna(text) or not isinstance(text, str):
                 text = ""
             keyword_count = sum([1 for kw in self.risk_keywords if kw in text])
             entities = self.extract_entities(text)
             entity_count = len(entities['phones']) + len(entities['groups']) + len(entities['crypto'])
+            
             post_meta_features.append([
                 float(keyword_count),
                 float(entity_count),
                 float(len(text)),
-                1.0 if any(kw in text for kw in self.urgent_keywords) else 0.0
+                1.0 if any(kw in text for kw in self.urgent_keywords) else 0.0,
+                float(ts_val) # [新增] 时间特征
             ])
         data['post'].meta = torch.tensor(post_meta_features, dtype=torch.float)
 
@@ -185,17 +224,15 @@ class DataPreprocessor:
         print("Processing Users...")
         user_features = []
         user_labels = []
-        df_users['user_name'] = df_users['user_name'].replace(r'^\s*$', np.nan, regex=True)
-        subset_cols = ['reg_time', 'post_count', 'follower_count', 'following_count']
         df_sorted = df_users.sort_values(by=['user_name'], na_position='last')
-        df_users_clean = df_sorted.drop_duplicates(subset=subset_cols, keep='first')
-
+        df_users_clean = df_sorted.drop_duplicates(subset=['user_id'], keep='first')
         for idx, row in df_users_clean.iterrows():
-            reg_time = float(row.get('reg_time', 0.0)) if pd.notna(row.get('reg_time')) else 0.0
-            post_freq = row.get('post_count', 0) / max(reg_time, 1)
+            reg_time = float(row.get('reg_time', 0.1))
+            reg_time_safe = reg_time if reg_time > 0 else 0.1
+            post_freq = row.get('post_count', 0) / reg_time_safe
             follower_ratio = row.get('follower_count', 0) / max(row.get('following_count', 1), 1)
             user_features.append([
-                reg_time / 365.0,
+                reg_time_safe,
                 post_freq,
                 follower_ratio,
                 float(row.get('post_count', 0)),
@@ -279,6 +316,7 @@ class DataPreprocessor:
         # ========== 2. 构建边 ==========
         print("Building edges...")
 
+        # 注意：这里的 df_users_clean 已经是过滤过空用户名的版本
         user_id_to_idx = {uid: idx for idx, uid in enumerate(df_users_clean['user_id'])}
         post_id_to_idx = {pid: idx for idx, pid in enumerate(df_posts['post_id'])}
 
@@ -294,6 +332,7 @@ class DataPreprocessor:
         # (U -> P) Repost
         repost_edges = []
         for idx, row in df_posts.iterrows():
+            # 此时 row['parent_post_id'] 可能为 None，pd.notna(None) 为 False，处理正确
             if row.get('is_repost', False) and pd.notna(row.get('parent_post_id')):
                 user_idx = user_id_to_idx.get(row['user_id'])
                 parent_idx = post_id_to_idx.get(row['parent_post_id'])
@@ -367,4 +406,6 @@ class DataPreprocessor:
         if interact_edges:
             data['user', 'interact', 'user'].edge_index = torch.tensor(interact_edges, dtype=torch.long).t()
 
+        print(f"Graph construction completed: {data}")
+        
         return data
