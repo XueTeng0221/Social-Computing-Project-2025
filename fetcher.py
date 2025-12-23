@@ -36,7 +36,7 @@ class AsyncTiebaFetcher:
         self.base_url = "https://tieba.baidu.com"
         self.list_url_template = f"{self.base_url}/f?kw={quote(tieba_name)}&pn={{page}}"
         self.thread_url_template = f"{self.base_url}/p/{{tid}}"
-        self.user_url_template = f"{self.base_url}/home/main?un={{username}}&fr=pb"
+        self.user_url_template = f"{self.base_url}/home/main?id={{uid}}&fr=pb"
         self.users_data = {}
         self.seen_posts = set()
         self.seen_users = set()
@@ -200,6 +200,9 @@ class AsyncTiebaFetcher:
                             if img_url:
                                 media_urls.append(img_url.split('/')[-1])
                         
+                        time_span = floor_div.find_all('span', class_='tail-info')
+                        post_time = time_span[-1].get_text(strip=True)
+                        
                         post_info = {
                             'post_id': content_info.get('post_id'),
                             'content': clean_content,
@@ -209,6 +212,7 @@ class AsyncTiebaFetcher:
                             'is_repost': 0,
                             'parent_post_id': None,
                             'media_urls': ','.join(media_urls) if media_urls else None,
+                            'timestamp': post_time,
                             'thread_id': tid
                         }
                         floors.append(post_info)
@@ -227,8 +231,8 @@ class AsyncTiebaFetcher:
                                     self.users_data[lzl_author_id] = {
                                         'user_id': lzl_author_id, 'user_name': lzl_name}
 
-                                lzl_content_span = lzl.find(
-                                    'span', class_='lzl_content_main')
+                                lzl_content_span = lzl.find('span', class_='lzl_content_main')
+                                lzl_time = unquote(lzl.find('span', class_='lzl_time').get_text(strip=True))
                                 floors.append({
                                     'post_id': lzl_data.get('spid') or content_info.get('post_id'),
                                     'content': lzl_content_span.get_text(strip=True) if lzl_content_span else "",
@@ -238,6 +242,7 @@ class AsyncTiebaFetcher:
                                     'is_repost': 1,
                                     'parent_post_id': lzl_data.get('pid'),
                                     'media_urls': None,
+                                    'timestamp': lzl_time,
                                     'thread_id': tid
                                 })
                             except:
@@ -254,7 +259,7 @@ class AsyncTiebaFetcher:
 
             return floors
 
-    async def fetch_user_info(self, username):
+    async def fetch_user_info(self, uid):
         """并发爬取用户信息"""
         async with self.sem:
             def safe_int(element, pattern=None):
@@ -270,14 +275,14 @@ class AsyncTiebaFetcher:
                 except (ValueError, AttributeError):
                     return 0
                 
-            if not username:
+            if not uid:
                 return None
-            logger.info(f"爬取用户: {username}")
+            logger.info(f"爬取用户: {uid}")
             page = await self.context.new_page()
             user_info = {}
 
             try:
-                url = self.user_url_template.format(username=quote(username))
+                url = self.user_url_template.format(uid=quote(uid))
                 try:
                     await page.goto(url, wait_until='domcontentloaded', timeout=15000)
                 except:
@@ -428,15 +433,12 @@ class AsyncTiebaFetcher:
             # 4. 并发补充用户信息
             logger.info(f"需要爬取 {len(self.users_data)} 个用户详情")
             user_tasks = []
-            for uid, info in self.users_data.items():
-                user_tasks.append(
-                    (uid, self.fetch_user_info(info['user_name'])))
+            for uid, _ in self.users_data.items():
+                user_tasks.append(self.fetch_user_info(uid))
 
-            # 由于 gather 无法直接绑定 ID，这里稍微处理一下
-            user_results_raw = await asyncio.gather(*[t[1] for t in user_tasks])
-
+            user_results_raw = await asyncio.gather(*user_tasks)
             for i, res in enumerate(user_results_raw):
-                uid = user_tasks[i][0]
+                uid = list(self.users_data.keys())[i]
                 if res:
                     self.users_data[uid].update(res)
                 else:
