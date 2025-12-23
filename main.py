@@ -41,10 +41,9 @@ def plot_training_history(history, save_dir):
     plt.grid(True, linestyle='--', alpha=0.6)
     
     plt.tight_layout()
-    save_path = os.path.join(save_dir, 'training_history.png')
+    save_path = os.path.join(save_dir, f'training_history_alpha={args.alpha}_gamma={args.gamma}.png')
     plt.savefig(save_path, dpi=300)
     print(f"📊 训练历史图表已保存至: {save_path}")
-    # plt.show() # 如果在服务器运行，请注释此行
 
 def plot_confusion_matrix_result(model, data, mask, save_dir, title="Test Confusion Matrix"):
     """绘制混淆矩阵"""
@@ -62,12 +61,9 @@ def plot_confusion_matrix_result(model, data, mask, save_dir, title="Test Confus
     disp.plot(cmap=plt.cm.Blues, values_format='d')
     plt.title(title)
     
-    save_path = os.path.join(save_dir, 'confusion_matrix.png')
+    save_path = os.path.join(save_dir, f'confusion_matrix_alpha={args.alpha}_gamma={args.gamma}.png')
     plt.savefig(save_path, dpi=300)
     print(f"📊 混淆矩阵已保存至: {save_path}")
-    # plt.show() # 如果在服务器运行，请注释此行
-
-# --- 原有辅助函数 ---
 
 def inspect_label_distribution(data):
     """检查标签分布，计算建议的 alpha 值"""
@@ -209,7 +205,7 @@ if __name__ == "__main__":
         
         if val_f1 >= best_f1:
             best_f1 = val_f1
-            torch.save(model.state_dict(), f'{args.save_dir}/best_model.pth')
+            torch.save(model.state_dict(), f'{args.save_dir}/best_model_alpha={args.alpha}_gamma={args.gamma}.pth')
             print(f"  ✅ 保存最佳模型 (F1={best_f1:.4f})")
     
     print("\n🎉 训练完成!")
@@ -220,7 +216,7 @@ if __name__ == "__main__":
 
     # 4. 测试最佳模型
     print("\n🔍 加载最佳模型进行测试...")
-    model.load_state_dict(torch.load(f'{args.save_dir}/best_model.pth', weights_only=True))
+    model.load_state_dict(torch.load(f'{args.save_dir}/best_model_alpha={args.alpha}_gamma={args.gamma}.pth', weights_only=True))
     test_f1, test_auc, test_precision, test_recall = evaluate(model, data, data['post'].test_mask)
     print(f"🎯 测试集性能: F1 {test_f1:.4f} | AUC {test_auc:.4f} | Precision {test_precision:.4f} | Recall {test_recall:.4f}")
     
