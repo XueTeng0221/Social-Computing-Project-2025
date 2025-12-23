@@ -10,3 +10,7 @@ faiss-cpu
 playwright
 pytest-playwright
 matplotlib
+torch_scatter
+torch_sparse
+networkx
+neo4j

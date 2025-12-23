@@ -55,7 +55,7 @@ def plot_comprehensive_results(history, model, data, test_mask, save_dir, alpha,
             'user': data['user'].x,
             'entity': data['entity'].x
         }
-        out = model(x_dict, data.edge_index_dict, post_meta=data['post'].meta)
+        out = model(x_dict, data.edge_index_dict, post_meta=data['post'].meta, cascade_features=data['post'].cascade)
         pred_prob = torch.sigmoid(out[test_mask]).squeeze().cpu().numpy()
         pred_label = (pred_prob > 0.5).astype(int)
         y_true = data['post'].y[test_mask].cpu().numpy()
@@ -85,7 +85,6 @@ def plot_comprehensive_results(history, model, data, test_mask, save_dir, alpha,
     save_path = os.path.join(save_dir, f'comprehensive_results_alpha={alpha}_gamma={gamma}.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"\n📊 综合结果图已保存至: {save_path}")
-    # plt.show()  # 服务器环境请注释此行
 
 def save_metrics_to_csv(history, test_metrics, save_dir, alpha, gamma):
     """

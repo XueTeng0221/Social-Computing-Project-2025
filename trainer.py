@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score
 from torch_geometric.data import HeteroData
 from models import FraudDetector
+from typing import Dict, Tuple, List
 
 class WeightedFocalLoss(torch.nn.Module):
     """
@@ -13,12 +14,12 @@ class WeightedFocalLoss(torch.nn.Module):
     alpha: 正样本的权重系数 (0 < alpha < 1)，通常设为 0.75 或更高以通过权重解决不平衡
     gamma: 聚焦参数，关注难分样本
     """
-    def __init__(self, alpha=0.75, gamma=2):
+    def __init__(self, alpha: float = 0.75, gamma: float = 2):
         super(WeightedFocalLoss, self).__init__()
         self.alpha = alpha
         self.gamma = gamma
 
-    def forward(self, inputs, targets):
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         if targets.shape != inputs.shape:
             targets = targets.view_as(inputs)
             
@@ -28,7 +29,7 @@ class WeightedFocalLoss(torch.nn.Module):
         loss = alpha_t * (1 - pt) ** self.gamma * bce_loss
         return loss.mean()
 
-def train_epoch(model: FraudDetector, data: HeteroData, optimizer: torch.optim.Optimizer, criterion: torch.nn.Module):
+def train_epoch(model: FraudDetector, data: HeteroData, optimizer: torch.optim.Optimizer, criterion: torch.nn.Module) -> float:
     model.train()
     optimizer.zero_grad()
     x_dict = {
@@ -37,11 +38,8 @@ def train_epoch(model: FraudDetector, data: HeteroData, optimizer: torch.optim.O
         'entity': data['entity'].x
     }
 
-    out = model(x_dict, data.edge_index_dict, post_meta=data['post'].meta)
+    out = model(x_dict, data.edge_index_dict, post_meta=data['post'].meta, cascade_features=data['post'].cascade)
     mask = data['post'].train_mask
-    if mask is None:
-        raise ValueError("data['post'].train_mask is None. Please split dataset first.")
-
     pred = out[mask]
     label = data['post'].y[mask]
     loss = criterion(pred, label.float())
@@ -49,7 +47,7 @@ def train_epoch(model: FraudDetector, data: HeteroData, optimizer: torch.optim.O
     optimizer.step()
     return loss.item()
 
-def evaluate(model, data, mask):
+def evaluate(model: FraudDetector, data: HeteroData, mask: torch.Tensor) -> Tuple[float, float, float, float]:
     model.eval()
     with torch.no_grad():
         x_dict = {
@@ -57,7 +55,7 @@ def evaluate(model, data, mask):
             'user': data['user'].x,
             'entity': data['entity'].x
         }
-        out = model(x_dict, data.edge_index_dict, post_meta=data['post'].meta)
+        out = model(x_dict, data.edge_index_dict, post_meta=data['post'].meta, cascade_features=data['post'].cascade)
         pred_prob = torch.sigmoid(out[mask]).squeeze().cpu().numpy()
         labels = data['post'].y[mask].cpu().numpy()
         

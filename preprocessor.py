@@ -5,17 +5,20 @@ import hashlib
 import re
 import pandas as pd
 import json
+import faiss
 import numpy as np
 from typing import Dict, List
 from torch_geometric.data import HeteroData
 from transformers import AutoTokenizer, AutoModel
+from social_signals import SocialSignalExtractor
 from tqdm import tqdm
 
 class DataPreprocessor:
-    def __init__(self, model_name: str = 'hfl/chinese-roberta-wwm-ext', device='cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(self, model_name: str = 'hfl/chinese-roberta-wwm-ext', device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         self.device = device
         print(f"Loading tokenizer and model from {model_name} to {self.device}...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.signal_extractor = SocialSignalExtractor()
         self.model = AutoModel.from_pretrained(model_name).to(self.device)
         self.model.eval()
         with open('risk_keywords.json', 'r', encoding='utf-8') as f:
@@ -24,7 +27,7 @@ class DataPreprocessor:
             self.urgent_keywords = data.get('urgent_keywords', [])
             self.risk_domains = data.get('risk_domains', [])
 
-    def clean_text(self, text) -> str:
+    def clean_text(self, text: str) -> str:
         """
         清洗文本，处理非字符串输入
         """
@@ -71,7 +74,7 @@ class DataPreprocessor:
             return "dummy_hash"
         return hashlib.md5(media_url.encode()).hexdigest()[:16]
 
-    def get_text_embeddings_batch(self, texts: List[str], batch_size=32, max_len=64) -> torch.Tensor:
+    def get_text_embeddings_batch(self, texts: List[str], batch_size: int = 32, max_len: int = 64) -> torch.Tensor:
         """
         分批次获取文本的 [CLS] 向量
         返回: (num_samples, hidden_size) 的 Tensor
@@ -106,54 +109,38 @@ class DataPreprocessor:
     def compute_text_similarity_edges(self, embeddings: torch.Tensor, threshold: float = 0.85, chunk_size: int = 1000):
         """
         计算文本相似度，用于构建 P-P 边
-        注意：O(N^2) 复杂度，对于大量数据(N > 10000)需要优化
+        FAISS 优化：O(N^2) -> O(NlogN) 复杂度
         """
         num_nodes = embeddings.shape[0]
         if num_nodes == 0:
             return torch.empty((2, 0), dtype=torch.long)
-            
-        # 归一化向量以便直接计算余弦相似度 (A . B) / (|A|*|B|) -> norm_A . norm_B
-        embeddings_norm = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-        edge_index = []
         
-        # 如果数据量较小，可以使用矩阵乘法一次性计算
-        if num_nodes < 5000:
-            sim_matrix = torch.mm(embeddings_norm, embeddings_norm.t())
-            triu_indices = torch.triu_indices(num_nodes, num_nodes, offset=1)
-            mask = sim_matrix[triu_indices[0], triu_indices[1]] >= threshold
-            sources = triu_indices[0][mask]
-            targets = triu_indices[1][mask]
-            edge_index = torch.stack([
-                torch.cat([sources, targets]),
-                torch.cat([targets, sources])
-            ], dim=0)
-            
+        # 归一化
+        embeddings_np = embeddings.cpu().numpy().astype('float32')
+        faiss.normalize_L2(embeddings_np)
+        
+        # 构建索引
+        index = faiss.IndexFlatIP(embeddings_np.shape[1])  # 内积索引
+        index.add(embeddings_np)
+        
+        # 搜索相似节点
+        k = min(50, num_nodes)  # 每个节点最多找50个相似节点
+        similarities, indices = index.search(embeddings_np, k)
+        
+        # 过滤并构建边
+        edge_list = []
+        for i in range(num_nodes):
+            for j, sim in zip(indices[i], similarities[i]):
+                if i < j and sim >= threshold:  # 避免重复边
+                    edge_list.append([i, j])
+        
+        if edge_list:
+            edges = torch.tensor(edge_list, dtype=torch.long).t()
+            # 双向边
+            edge_index = torch.cat([edges, edges.flip(0)], dim=1)
         else:
-            # 数据量大时，为了节省内存，可以使用分块计算
-            print(f"Warning: Large number of posts ({num_nodes}), computing similarity might be slow.")
-            sources_list = []
-            targets_list = []
-            chunk_size = 1000
-            for i in range(0, num_nodes, chunk_size):
-                end_i = min(i + chunk_size, num_nodes)
-                chunk_i = embeddings_norm[i:end_i]
-                sim_chunk = torch.mm(chunk_i, embeddings_norm.t())
-                rows, cols = torch.where(sim_chunk >= threshold)
-                global_rows = rows + i
-                valid_mask = global_rows < cols
-                sources_list.append(global_rows[valid_mask])
-                targets_list.append(cols[valid_mask])
-            
-            if sources_list:
-                all_sources = torch.cat(sources_list)
-                all_targets = torch.cat(targets_list)
-                edge_index = torch.stack([
-                    torch.cat([all_sources, all_targets]),
-                    torch.cat([all_targets, all_sources])
-                ], dim=0)
-            else:
-                edge_index = torch.empty((2, 0), dtype=torch.long)
-
+            edge_index = torch.empty((2, 0), dtype=torch.long)
+        
         return edge_index
 
     def preprocess_timestamp(self, df_posts: pd.DataFrame) -> pd.Series:
@@ -180,7 +167,21 @@ class DataPreprocessor:
         return normalized_ts
 
     def build_graph(self, df_posts: pd.DataFrame, df_users: pd.DataFrame, df_relations: pd.DataFrame,
-                    df_media: pd.DataFrame = None) -> HeteroData:
+                    df_media: pd.DataFrame = None, enable_cascade: bool = True, time_limit: int = 60) -> HeteroData:
+        """
+        基于社会信号（可选）构建异构图
+
+        Args:
+            df_posts (pd.DataFrame): posts 数据集
+            df_users (pd.DataFrame): users 数据集
+            df_relations (pd.DataFrame): 关系数据集
+            df_media (pd.DataFrame, optional): 媒体数据集. Defaults to None.
+            enable_cascade (bool, optional): 是否启用级联特征. Defaults to True.
+            time_limit (int, optional): 级联时间限制（秒）. Defaults to 60.
+
+        Returns:
+            HeteroData: 构建好的异构图数据结构
+        """
         df_posts['parent_post_id'] = df_posts['parent_post_id'].replace(r'^\s*$', np.nan, regex=True)
         df_posts['parent_post_id'] = df_posts['parent_post_id'].where(pd.notnull(df_posts['parent_post_id']), None)
         df_posts['floor_num'] = df_posts['floor_num'].replace(r'\..*$', '', regex=True)
@@ -192,7 +193,41 @@ class DataPreprocessor:
         df_users['follower_count'] = df_users['follower_count'].fillna(0)
         df_users['following_count'] = df_users['following_count'].fillna(0)
         print("Data cleaning completed.")
+        
         data = HeteroData()
+        
+        print("\n🔍 提取社会信号...")
+        
+        # 3.2 传播信号 (Diffusion)
+        if enable_cascade:
+            print("  - 提取级联传播特征...")
+            cascade_df = self.signal_extractor.batch_extract_cascade_features(
+                df_posts, time_limit=time_limit
+            )
+            df_posts = df_posts.merge(cascade_df, on='post_id', how='left')
+        
+        # 3.3 行为信号 (Behavioral)
+        print("  - 提取用户行为特征...")
+        behavioral_df = self.signal_extractor.compute_user_behavioral_features(
+            df_posts, df_users
+        )
+        df_users = df_users.merge(behavioral_df, on='user_id', how='left')
+        
+        # 3.1 关系信号 (Relational) - 计算邻居风险
+        print("  - 计算关系信号...")
+        user_risk_dict = df_users.set_index('user_id')['risky_content_ratio'].to_dict()
+        
+        neighbor_risks = []
+        for user_id in df_users['user_id']:
+            risk = self.signal_extractor.compute_neighbor_risk_score(
+                user_id, df_relations, user_risk_dict
+            )
+            neighbor_risks.append(risk)
+        df_users['neighbor_risk_score'] = neighbor_risks
+        
+        # 互动同质性
+        homogeneity_dict = self.signal_extractor.extract_interaction_homogeneity(df_relations)
+        df_users['interaction_homogeneity'] = df_users['user_id'].map(homogeneity_dict).fillna(0.0)
 
         # ========== 1. 构建节点特征 ==========
 
@@ -218,7 +253,14 @@ class DataPreprocessor:
                 1.0 if any(kw in text for kw in self.urgent_keywords) else 0.0,
                 float(ts_val) # [新增] 时间特征
             ])
+            
         data['post'].meta = torch.tensor(post_meta_features, dtype=torch.float)
+        if enable_cascade:
+            cascade_features = df_posts[['cascade_depth', 'cascade_width', 
+                                         'early_growth_rate', 'structural_entropy']].fillna(0.0).values
+            data['post'].cascade = torch.tensor(cascade_features, dtype=torch.float)
+        else:
+            data['post'].cascade = torch.zeros((len(df_posts), 4), dtype=torch.float)
 
         # ----- User 节点 -----
         print("Processing Users...")
@@ -238,6 +280,10 @@ class DataPreprocessor:
                 float(row.get('post_count', 0)),
                 float(row.get('verified', 0)),
                 float(row.get('has_avatar', 1)),
+                float(row.get('ignore_nudge_rate', 0.0)),
+                float(row.get('avg_share_delay', 0.0)),
+                float(row.get('neighbor_risk_score', 0.0)),
+                float(row.get('interaction_homogeneity', 0.0))
             ])
 
             user_posts = df_posts[df_posts['user_id'] == row['user_id']]
