@@ -185,7 +185,7 @@ class DataPreprocessor:
         df_posts['parent_post_id'] = df_posts['parent_post_id'].where(pd.notnull(df_posts['parent_post_id']), None)
         df_posts['floor_num'] = df_posts['floor_num'].replace(r'\..*$', '', regex=True)
         initial_len = len(df_users)
-        df_users = df_users.dropna(subset=['user_name']).reset_index(drop=True)
+        df_users = df_users.dropna(subset=['user_id']).reset_index(drop=True)
         print(f"  - Dropped {initial_len - len(df_users)} users with empty names.")
         df_users['reg_time'] = df_users['reg_time'].fillna(0.0)
         df_users.loc[df_users['reg_time'] == 0.0, 'reg_time'] = 0.1  # 避免除零，设为一个很小的正数
@@ -224,7 +224,7 @@ class DataPreprocessor:
         print("Processing Users...")
         user_features = []
         user_labels = []
-        df_sorted = df_users.sort_values(by=['user_name'], na_position='last')
+        df_sorted = df_users.sort_values(by=['user_id'], na_position='last')
         df_users_clean = df_sorted.drop_duplicates(subset=['user_id'], keep='first')
         for idx, row in df_users_clean.iterrows():
             reg_time = float(row.get('reg_time', 0.1))
