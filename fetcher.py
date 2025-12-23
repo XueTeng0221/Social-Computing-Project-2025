@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 import pandas as pd
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -321,10 +321,10 @@ class AsyncTiebaFetcher:
                 has_avatar = bool(avatar_tag and avatar_tag.find('img'))
                 user_info['has_avatar'] = has_avatar
                 
-                logger.info(f"✓ 成功解析用户 {username}: {user_info}")
+                logger.info(f"✓ 成功解析用户 {uid}: {user_info}")
                 
             except Exception as e:
-                logger.warning(f"用户 {username} 爬取失败: {e}")
+                logger.warning(f"用户 {uid} 爬取失败: {e}")
             finally:
                 await page.close()
                 await self._random_sleep()
