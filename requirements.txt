@@ -13,4 +13,3 @@ matplotlib
 torch_scatter
 torch_sparse
 networkx
-neo4j
